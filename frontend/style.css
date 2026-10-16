@@ -355,3 +355,73 @@ dialog::backdrop {
   background: var(--accent);
   color: #fff;
 }
+
+.scan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-bottom: 12px;
+  font-size: 0.875rem;
+}
+
+.finding {
+  color: var(--error);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#scan-btn {
+  padding: 6px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+}
+
+#scan-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+#scan-groups {
+  margin-top: 16px;
+}
+
+#scan-groups summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+/* 점검 표: ID가 하이픈에서 끊기지 않게 하고, 넓으면 표만 가로 스크롤한다 (.table-wrap). */
+#scan-table td,
+#actions-table td.mono,
+#control-ec2-table td.mono,
+#scan-groups-table td.mono {
+  white-space: nowrap;
+}
+
+.banner {
+  margin-bottom: 16px;
+}
+
+.small {
+  font-size: 0.8125rem;
+  margin: 12px 0 0;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-bar select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}

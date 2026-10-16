@@ -103,6 +103,7 @@ const loginStatus = $("login-status");
 const refreshBtn = $("refresh-btn");
 const controlRefreshBtn = $("control-refresh-btn");
 const dialog = $("confirm-dialog");
+const scanBtn = $("scan-btn");
 
 function showLogin(err) {
   loginView.hidden = false;
@@ -132,6 +133,12 @@ function selectTab(name) {
 
 tabs.forEach((tab) => tab.addEventListener("click", () => selectTab(tab.dataset.tab)));
 
+const SUMMARY_IDS = [
+  "count-ec2", "count-ec2-running", "count-ec2-stopped", "count-ec2-controllable",
+  "count-s3", "count-sg", "count-actions",
+];
+const UNAVAILABLE = "확인 불가";
+
 // 조회 데이터를 화면과 메모리에서 모두 지운다.
 function clearData() {
   lastContext = null;
@@ -140,7 +147,11 @@ function clearData() {
   busy = false;
   if (dialog.open) dialog.close("cancel");
   for (const id of ["ctx-account", "ctx-arn", "ctx-region", "last-fetched"]) $(id).textContent = "-";
-  for (const id of ["count-ec2", "count-s3", "count-sg"]) setCount($(id), "idle", "-");
+  for (const id of SUMMARY_IDS) setCount($(id), "idle", "-");
+  setCount($("count-findings"), "idle", "점검 전");
+  $("ec2-filter").value = "";
+  $("ec2-filter-info").textContent = "";
+  hideAwsLoginBanner();
   for (const id of ["context-status", "ec2-status", "ec2-action-status", "s3-status", "sg-status", "control-status", "control-ec2-status", "actions-status"]) {
     setStatus($(id), "ok", "");
   }
@@ -150,6 +161,7 @@ function clearData() {
     table.querySelector("tbody").replaceChildren();
   }
   renderUnconfirmed();
+  clearScan();
   selectTab("dashboard");
 }
 
@@ -200,19 +212,34 @@ async function loadList({ path, statusId, tableId, countId, emptyText, renderRow
   } catch (err) {
     if (err instanceof StaleSession) return;
     // 실패를 0개로 표시하지 않는다.
-    if (count) setCount(count, "error", "오류");
+    if (count) setCount(count, "error", UNAVAILABLE);
     handleError(status, err);
     if (onFailed) onFailed(err);
   }
 }
 
-// 사용 중 토큰이 거절되면(서버 토큰 변경 등) 로그아웃하고 입력 화면으로 돌아간다.
+// 오류 처리 기준
+// - 앱 401(APP_AUTH_REQUIRED): 앱 토큰 문제 → 로그아웃하고 토큰 입력 화면으로 돌아간다.
+// - AWS_LOGIN_REQUIRED(503): 앱 토큰은 정상, WSL의 AWS 로그인 만료 → 화면을 유지하고 재로그인 안내를 띄운다.
 function handleError(statusEl, err) {
   if (err.status === 401) {
-    logout(err);
+    logout(new ApiError(401, err.code, "앱 토큰이 거절되었습니다. 앱 토큰을 다시 입력하세요."));
     return;
   }
+  if (err.code === "AWS_LOGIN_REQUIRED") showAwsLoginBanner();
   showError(statusEl, err);
+}
+
+function showAwsLoginBanner() {
+  const banner = $("aws-login-banner");
+  banner.textContent =
+    "[AWS_LOGIN_REQUIRED] AWS 로그인이 만료되었거나 갱신할 수 없습니다. 앱 토큰 문제는 아닙니다. " +
+    "WSL에서 aws login --profile lab 을 실행한 뒤 '조회'를 누르세요.";
+  banner.hidden = false;
+}
+
+function hideAwsLoginBanner() {
+  $("aws-login-banner").hidden = true;
 }
 
 function renderEc2(item) {
@@ -318,9 +345,32 @@ function actionButtonsCell(item) {
   return td;
 }
 
+// EC2 탭 표: 서버를 다시 호출하지 않고 이미 조회한 ec2Items만 상태로 거른다.
+function renderEc2Table() {
+  const filter = $("ec2-filter").value;
+  const shown = filter ? ec2Items.filter((item) => item.state === filter) : ec2Items;
+  const table = $("ec2-table");
+  table.querySelector("tbody").replaceChildren(...shown.flatMap(renderEc2));
+  if (ec2Items.length === 0) {
+    $("ec2-filter-info").textContent = "";
+    return; // 빈 목록·오류 안내는 loadList가 표시한다.
+  }
+  table.hidden = shown.length === 0;
+  $("ec2-filter-info").textContent = shown.length
+    ? `${ec2Items.length}개 중 ${shown.length}개 표시`
+    : `${ec2Items.length}개 중 선택한 상태(${filter})의 인스턴스가 없습니다.`;
+}
+
+function renderEc2Summary() {
+  const count = (pred) => String(ec2Items.filter(pred).length);
+  setCount($("count-ec2-running"), "ok", count((i) => i.state === "running"));
+  setCount($("count-ec2-stopped"), "ok", count((i) => i.state === "stopped"));
+  setCount($("count-ec2-controllable"), "ok", count((i) => i.controllable));
+}
+
 // 요청 진행 여부(busy)가 바뀌면 두 탭의 버튼을 다시 그린다.
 function renderActionButtons() {
-  $("ec2-table").querySelector("tbody").replaceChildren(...ec2Items.flatMap(renderEc2));
+  renderEc2Table();
   renderControlEc2();
 }
 
@@ -406,8 +456,9 @@ async function sendAction(item, action, statusId) {
       body: { action, request_id: requestId },
     });
     unconfirmed.delete(key);
-    const prefix = code === 202 ? "AWS가 요청을 접수했습니다" : "이미 처리된 요청입니다";
-    const text = `${prefix}: 이력 #${data.action_id}, ${data.status}${data.warning ? ` — ${data.warning}` : ""}`;
+    const text = code === 202
+      ? `AWS 요청 접수 — 현재 상태는 새로고침으로 확인 (이력 #${data.action_id})${data.warning ? ` — ${data.warning}` : ""}`
+      : `이미 처리된 요청입니다 — 다시 실행하지 않았습니다 (이력 #${data.action_id}, ${data.status})`;
     setStatus(status, data.warning ? "warn" : "empty", text);
   } catch (err) {
     if (err instanceof StaleSession) return;
@@ -431,18 +482,132 @@ async function sendAction(item, action, statusId) {
   if (token) await loadControl();
 }
 
+// ---- 보안 점검 ----
+// 결과는 버튼을 누를 때마다 서버에서 새로 조회한다. 이전 결과를 남겨 새 결과처럼 보이지 않게 먼저 지운다.
+
+const REVIEW_TEXT = "공개 관리 포트 규칙: 검토 필요";
+
+function clearScan() {
+  setStatus($("scan-status"), "ok", "");
+  $("scan-meta").hidden = true;
+  $("scan-table").hidden = true;
+  $("scan-table").querySelector("tbody").replaceChildren();
+  $("scan-groups").hidden = true;
+  $("scan-groups-table").querySelector("tbody").replaceChildren();
+}
+
+function formatScanProtocol(proto) {
+  if (proto === "-1") return "전체 프로토콜";
+  if (proto === "tcp" || proto === "6") return "TCP";
+  return String(proto);
+}
+
+function formatScanRange(f) {
+  if (f.protocol === "-1" || f.from_port == null) return "전체";
+  return f.from_port === f.to_port ? String(f.from_port) : `${f.from_port}-${f.to_port}`;
+}
+
+// 한 그룹을 여러 인스턴스가 쓰면 연결 대상마다 한 행으로 펼친다 (finding 수는 그대로).
+function renderFindingRows(f) {
+  return f.connections.map((c) => {
+    const tr = document.createElement("tr");
+    tr.append(
+      cell(c.instance_name),
+      cell(c.instance_id, "mono"),
+      cell(c.state, `state state-${c.state}`),
+      cell(c.network_interface_id, "mono"),
+      cell(f.group_id, "mono"),
+      cell(f.group_name),
+      cell(f.ip_family),
+      cell(f.cidr, "mono"),
+      cell(formatScanProtocol(f.protocol)),
+      cell(formatScanRange(f), "mono"),
+      cell(f.management_ports.join(", "), "mono"),
+      cell(REVIEW_TEXT, "finding"),
+    );
+    return tr;
+  });
+}
+
+function renderCheckedGroup(g, findingCount) {
+  const tr = document.createElement("tr");
+  tr.append(
+    cell(g.group_id, "mono"),
+    cell(g.group_name),
+    cell(g.connections.map((c) => `${c.instance_name} (${c.instance_id}, ${c.state})`).join(", ")),
+    cell(g.connections.map((c) => c.network_interface_id).join(", "), "mono"),
+    cell(findingCount ? `${findingCount}건` : "없음", findingCount ? "finding" : "muted"),
+  );
+  return tr;
+}
+
+function renderScan(r) {
+  $("scan-summary").textContent =
+    `점검 인스턴스 ${r.checked_instance_count}개 · 보안 그룹 ${r.checked_group_count}개 · 검토 필요 ${r.finding_count}건`;
+  $("scan-time").textContent = r.checked_at;
+  $("scan-meta").hidden = false;
+
+  const status = $("scan-status");
+  if (r.checked_group_count === 0) {
+    setStatus(status, "empty", "점검 대상 EC2 연결 보안 그룹 없음");
+    return;
+  }
+  if (r.finding_count === 0) {
+    setStatus(status, "empty", "이번 점검 조건에 해당하는 규칙 없음");
+  } else {
+    setStatus(status, "warn", `${REVIEW_TEXT} ${r.finding_count}건`);
+    $("scan-table").querySelector("tbody").replaceChildren(...r.findings.flatMap(renderFindingRows));
+    $("scan-table").hidden = false;
+  }
+
+  const perGroup = new Map();
+  for (const f of r.findings) perGroup.set(f.group_id, (perGroup.get(f.group_id) || 0) + 1);
+  $("scan-groups-table").querySelector("tbody").replaceChildren(
+    ...r.checked_groups.map((g) => renderCheckedGroup(g, perGroup.get(g.group_id) || 0)),
+  );
+  $("scan-group-count").textContent = `(${r.checked_group_count}개)`;
+  $("scan-groups").hidden = false;
+}
+
+async function runScan() {
+  scanBtn.disabled = true;
+  clearScan();
+  setStatus($("scan-status"), "loading", "AWS에서 EC2와 보안 그룹을 새로 조회하는 중…");
+  setCount($("count-findings"), "loading", "…");
+  hideAwsLoginBanner();
+  try {
+    const { data } = await fetchJson("/api/security-checks");
+    renderScan(data);
+    setCount($("count-findings"), "ok", String(data.finding_count));
+  } catch (err) {
+    if (err instanceof StaleSession) return;
+    // 실패를 "발견 없음"으로 표시하지 않는다. 이전 결과도 남기지 않는다.
+    clearScan();
+    setCount($("count-findings"), "error", UNAVAILABLE);
+    handleError($("scan-status"), err);
+  } finally {
+    scanBtn.disabled = false;
+  }
+}
+
 // ---- 조회 묶음 ----
 
 function ec2ListOptions() {
   return {
     path: "/api/ec2", statusId: "ec2-status", tableId: "ec2-table", countId: "count-ec2",
-    emptyText: "EC2 인스턴스가 없습니다.", renderRows: renderEc2,
+    emptyText: "EC2 인스턴스가 없습니다.", renderRows: () => [],
     onLoaded: (data) => {
       ec2Items = data.items;
+      renderEc2Table();
+      renderEc2Summary();
       renderControlEc2();
     },
     onFailed: (err) => {
       ec2Items = [];
+      $("ec2-filter-info").textContent = "";
+      for (const id of ["count-ec2-running", "count-ec2-stopped", "count-ec2-controllable"]) {
+        setCount($(id), "error", UNAVAILABLE);
+      }
       $("control-ec2-table").hidden = true;
       showError($("control-ec2-status"), err);
     },
@@ -451,13 +616,14 @@ function ec2ListOptions() {
 
 function loadActions() {
   return loadList({
-    path: "/api/actions", statusId: "actions-status", tableId: "actions-table",
+    path: "/api/actions", statusId: "actions-status", tableId: "actions-table", countId: "count-actions",
     emptyText: "제어 이력이 없습니다.", renderRows: renderAction,
   });
 }
 
 function loadLists() {
   setStatus($("control-ec2-status"), "loading", "조회하는 중…");
+  for (const id of ["count-ec2-running", "count-ec2-stopped", "count-ec2-controllable"]) setCount($(id), "loading", "…");
   return Promise.all([
     loadList(ec2ListOptions()),
     loadList({
@@ -476,6 +642,7 @@ function loadLists() {
 async function loadControl() {
   const mySession = session;
   controlRefreshBtn.disabled = true;
+  hideAwsLoginBanner();
   setStatus($("control-ec2-status"), "loading", "조회하는 중…");
   await Promise.all([loadList(ec2ListOptions()), loadActions()]);
   controlRefreshBtn.disabled = false;
@@ -502,22 +669,33 @@ async function connect(event) {
   connectBtn.disabled = true;
   setStatus(loginStatus, "loading", "토큰을 확인하는 중…");
 
-  let context;
+  let context = null;
+  let contextError = null;
   try {
     context = (await fetchJson("/api/context")).data;
   } catch (err) {
     if (err instanceof StaleSession) return;
-    token = null;
-    connectBtn.disabled = false;
-    showLogin(err);
-    return;
+    // 401(토큰 거절)이나 서버 무응답이면 입력 화면에 남는다.
+    // 그 외 오류(예: AWS_LOGIN_REQUIRED)는 인증을 통과한 뒤 난 것이므로 앱 화면에서 안내한다.
+    if (err.status === 401 || err.status === 0) {
+      token = null;
+      connectBtn.disabled = false;
+      showLogin(err);
+      return;
+    }
+    contextError = err;
   }
 
   tokenInput.value = ""; // 입력란에도 남기지 않는다.
   connectBtn.disabled = false;
   clearData();
   showApp();
-  renderContext(context);
+  if (context) {
+    renderContext(context);
+  } else {
+    for (const id of ["ctx-account", "ctx-arn", "ctx-region"]) $(id).textContent = "조회 실패";
+    handleError($("context-status"), contextError);
+  }
   refreshBtn.disabled = true;
   await loadLists();
   refreshBtn.disabled = false;
@@ -528,6 +706,7 @@ async function refreshAll() {
   const mySession = session;
   refreshBtn.disabled = true;
   refreshBtn.textContent = "조회 중…";
+  hideAwsLoginBanner();
   await Promise.all([loadContext(), loadLists()]);
   refreshBtn.disabled = false;
   refreshBtn.textContent = "조회";
@@ -542,6 +721,7 @@ function logout(err) {
   refreshBtn.disabled = false;
   refreshBtn.textContent = "조회";
   controlRefreshBtn.disabled = false;
+  scanBtn.disabled = false;
   clearData();
   showLogin(err);
 }
@@ -549,6 +729,8 @@ function logout(err) {
 $("login-form").addEventListener("submit", connect);
 refreshBtn.addEventListener("click", refreshAll);
 controlRefreshBtn.addEventListener("click", loadControl);
+scanBtn.addEventListener("click", runScan);
+$("ec2-filter").addEventListener("change", renderEc2Table);
 $("logout-btn").addEventListener("click", () => logout());
 
 showLogin();

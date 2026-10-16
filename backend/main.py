@@ -111,6 +111,12 @@ def list_security_groups(aws: AwsService = Depends(verified_aws)):
     return {"items": items, "count": len(items)}
 
 
+@api.get("/security-checks")
+def security_checks(aws: AwsService = Depends(get_aws)):
+    # 요청마다 AWS에서 새로 조회한다. 결과는 저장·캐시하지 않는다. (계정 확인은 서비스 안에서 수행)
+    return aws.scan_security_groups()
+
+
 @api.get("/actions")
 def list_actions(db: Session = Depends(get_db)):
     items = [log.to_dict() for log in list_recent_actions(db)]

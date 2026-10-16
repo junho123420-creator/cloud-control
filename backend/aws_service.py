@@ -1,11 +1,14 @@
 """Boto3 조회 로직. FastAPI에 의존하지 않고 오류는 AwsServiceError로 변환한다."""
 
+from datetime import datetime, timezone
+
 import boto3
 from botocore import exceptions as bex
 from botocore.config import Config
 
 from backend.config import Settings
 from backend.errors import AppError
+from backend.security_check import inspect_group
 
 BOTO_CONFIG = Config(
     connect_timeout=3,
@@ -18,6 +21,10 @@ CONTROL_CONFIG = Config(
     read_timeout=10,
     retries={"total_max_attempts": 1, "mode": "standard"},
 )
+
+# 보안 그룹 점검: 실제 EC2(종료되지 않은 인스턴스)에 연결된 그룹만 대상으로 한다.
+SCAN_INSTANCE_STATES = ["pending", "running", "stopping", "stopped"]
+SG_BATCH_SIZE = 100
 
 # 로그인 만료·자격증명 없음·갱신 불가
 LOGIN_EXCEPTIONS = (
@@ -97,6 +104,13 @@ def classify_control_error(exc: Exception) -> tuple[str, AwsServiceError]:
         return OUTCOME_FAILED, _translate(exc)
     # 읽기 timeout, 연결 끊김, 그 밖의 예외는 전송 후일 수 있으므로 불확실로 본다.
     return OUTCOME_UNKNOWN, unknown
+
+
+def _scan_incomplete(reason: str) -> AwsServiceError:
+    return AwsServiceError(
+        503, "AWS_SCAN_INCOMPLETE",
+        f"보안 그룹 점검을 완료하지 못했습니다: {reason} 잠시 후 다시 점검하세요.",
+    )
 
 
 class AwsService:
@@ -204,6 +218,115 @@ class AwsService:
         else:
             raise ValueError("지원하지 않는 작업")
         return resp.get("ResponseMetadata", {}).get("RequestId")
+
+    # ---- 보안 그룹 점검 (DescribeInstances, DescribeSecurityGroups 조회만 사용) ----
+
+    def collect_group_attachments(self) -> dict[str, list[dict]]:
+        """그룹 ID → 연결 목록. 연결은 (instance_id, network_interface_id, group_id)로 중복 제거한다.
+
+        제어 허용 목록(ALLOWED_INSTANCE_IDS)은 시작·중지 제한이므로 여기서는 쓰지 않는다.
+        """
+
+        def run():
+            paginator = self._client("ec2").get_paginator("describe_instances")
+            pages = paginator.paginate(
+                Filters=[{"Name": "instance-state-name", "Values": SCAN_INSTANCE_STATES}]
+            )
+            attachments: dict[str, list[dict]] = {}
+            seen: set[tuple[str, str, str]] = set()
+            for page in pages:
+                for reservation in page.get("Reservations", []):
+                    for inst in reservation.get("Instances", []):
+                        instance_id = inst.get("InstanceId")
+                        interfaces = inst.get("NetworkInterfaces")
+                        # 실행 중인 EC2는 ENI와 보안 그룹을 반드시 가진다. 없으면 0건으로 단정하지 않는다.
+                        if not instance_id or not interfaces:
+                            raise _scan_incomplete("인스턴스의 네트워크 인터페이스 정보가 누락되었습니다.")
+                        tags = {t.get("Key"): t.get("Value") for t in inst.get("Tags", [])}
+                        name = tags.get("Name") or instance_id
+                        state = inst.get("State", {}).get("Name")
+                        for eni in interfaces:
+                            eni_id = eni.get("NetworkInterfaceId")
+                            groups = eni.get("Groups")
+                            if not eni_id or not groups:
+                                raise _scan_incomplete(f"{instance_id}의 보안 그룹 정보가 누락되었습니다.")
+                            for group in groups:
+                                group_id = group.get("GroupId")
+                                if not group_id:
+                                    raise _scan_incomplete(f"{instance_id}의 보안 그룹 ID가 누락되었습니다.")
+                                key = (instance_id, eni_id, group_id)
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                attachments.setdefault(group_id, []).append({
+                                    "instance_id": instance_id,
+                                    "instance_name": name,
+                                    "state": state,
+                                    "network_interface_id": eni_id,
+                                })
+            return attachments
+
+        return self._call(run)
+
+    def describe_groups_by_id(self, group_ids) -> dict[str, dict]:
+        """정렬한 고유 ID를 100개씩 묶어 조회한다. 요청한 그룹이 하나라도 빠지면 점검 실패다."""
+        ids = sorted(set(group_ids))
+        if not ids:
+            # 빈 GroupIds로 호출하면 계정의 모든 보안 그룹이 조회되므로 호출하지 않는다.
+            return {}
+        client = self._client("ec2")
+        found: dict[str, dict] = {}
+        for start in range(0, len(ids), SG_BATCH_SIZE):
+            batch = ids[start:start + SG_BATCH_SIZE]
+
+            def run(batch=batch):
+                try:
+                    return client.describe_security_groups(GroupIds=batch)
+                except bex.ClientError as exc:
+                    if exc.response.get("Error", {}).get("Code", "").startswith("InvalidGroup"):
+                        raise _scan_incomplete("조회 중 보안 그룹이 삭제되었거나 찾을 수 없습니다.") from None
+                    raise
+
+            groups = self._call(run).get("SecurityGroups", [])
+            returned = {g.get("GroupId") for g in groups}
+            if returned != set(batch):
+                raise _scan_incomplete("요청한 보안 그룹과 조회 결과가 일치하지 않습니다.")
+            for g in groups:
+                found[g["GroupId"]] = g
+        return found
+
+    def scan_security_groups(self) -> dict:
+        """실제 EC2 ENI에 연결된 보안 그룹의 공개 TCP 22·3389 규칙을 점검한다.
+
+        모든 조회가 성공했을 때만 결과를 반환한다. 중간 실패는 예외로 올라가며 "발견 없음"이 되지 않는다.
+        finding은 (그룹 인바운드 규칙, 공개 CIDR) 단위이며 그룹을 쓰는 인스턴스 수만큼 늘리지 않는다.
+        """
+        self.get_context()  # 예상 계정이 아니면 403
+        connections = self.collect_group_attachments()
+        groups = self.describe_groups_by_id(connections.keys())
+
+        checked_groups = []
+        findings = []
+        for group_id in sorted(groups):
+            group = groups[group_id]  # 원본 GroupId/GroupName/IpPermissions 구조 그대로
+            group_connections = connections[group_id]
+            for finding in inspect_group(group):  # 그룹마다 한 번만 전달
+                findings.append(finding | {"connections": group_connections})
+            checked_groups.append({
+                "group_id": group_id,
+                "group_name": group.get("GroupName", ""),
+                "connections": group_connections,
+            })
+
+        instance_ids = {c["instance_id"] for conns in connections.values() for c in conns}
+        return {
+            "findings": findings,
+            "checked_groups": checked_groups,
+            "checked_instance_count": len(instance_ids),
+            "checked_group_count": len(checked_groups),
+            "finding_count": len(findings),
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
 
     def list_s3_buckets(self) -> list[dict]:
         buckets = self._paginate("s3", "list_buckets", "Buckets")

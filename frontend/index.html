@@ -30,10 +30,12 @@
       <button type="button" role="tab" data-tab="ec2" aria-selected="false">EC2</button>
       <button type="button" role="tab" data-tab="s3" aria-selected="false">S3</button>
       <button type="button" role="tab" data-tab="sg" aria-selected="false">보안 그룹</button>
-      <button type="button" role="tab" data-tab="control" aria-selected="false">제어·이력</button>
+      <button type="button" role="tab" data-tab="control" aria-selected="false">실행 이력</button>
+      <button type="button" role="tab" data-tab="security" aria-selected="false">보안 점검</button>
     </nav>
 
     <main>
+      <div id="aws-login-banner" class="status status-error banner" hidden></div>
       <section id="tab-dashboard" class="panel">
         <div id="context-status" class="status"></div>
         <dl class="context">
@@ -44,12 +46,31 @@
         </dl>
         <div class="cards">
           <div class="card"><span class="card-label">EC2 인스턴스</span><span id="count-ec2" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">EC2 실행 중</span><span id="count-ec2-running" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">EC2 중지됨</span><span id="count-ec2-stopped" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">제어 허용 EC2</span><span id="count-ec2-controllable" class="card-value">-</span></div>
           <div class="card"><span class="card-label">S3 버킷</span><span id="count-s3" class="card-value">-</span></div>
-          <div class="card"><span class="card-label">보안 그룹</span><span id="count-sg" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">보안 그룹 (서울)</span><span id="count-sg" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">최근 실행 이력 (최대 50)</span><span id="count-actions" class="card-value">-</span></div>
+          <div class="card"><span class="card-label">보안 점검 검토 필요</span><span id="count-findings" class="card-value">-</span></div>
         </div>
+        <p class="muted small">숫자는 마지막 조회 결과로 계산합니다. 조회에 실패한 항목은 "확인 불가"로 표시합니다. 보안 점검은 "보안 점검" 탭에서 실행합니다.</p>
       </section>
 
       <section id="tab-ec2" class="panel" hidden>
+        <div class="filter-bar">
+          <label for="ec2-filter">상태</label>
+          <select id="ec2-filter">
+            <option value="">전체</option>
+            <option value="running">running</option>
+            <option value="stopped">stopped</option>
+            <option value="pending">pending</option>
+            <option value="stopping">stopping</option>
+            <option value="shutting-down">shutting-down</option>
+            <option value="terminated">terminated</option>
+          </select>
+          <span id="ec2-filter-info" class="muted"></span>
+        </div>
         <div id="ec2-action-status" class="status" hidden></div>
         <div id="ec2-status" class="status"></div>
         <div class="table-wrap">
@@ -113,6 +134,40 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section id="tab-security" class="panel" hidden>
+        <div class="panel-head">
+          <p class="muted">실제 EC2의 모든 ENI에 연결된 보안 그룹에서 인터넷 전체(0.0.0.0/0, ::/0)에 열린 TCP 22·3389 규칙을 찾습니다.</p>
+          <button id="scan-btn" type="button">점검 실행</button>
+        </div>
+        <div id="scan-status" class="status"></div>
+        <div id="scan-meta" class="scan-meta" hidden>
+          <span id="scan-summary"></span>
+          <span>점검 시각: <span id="scan-time" class="mono"></span></span>
+          <span class="muted">규칙 기반 점검이며 실제 침해 여부 판정이 아님</span>
+        </div>
+        <div class="table-wrap">
+          <table id="scan-table" hidden>
+            <thead>
+              <tr>
+                <th>인스턴스 이름</th><th>인스턴스 ID</th><th>상태</th><th>ENI</th>
+                <th>그룹 ID</th><th>그룹 이름</th><th>IP 버전</th><th>CIDR</th>
+                <th>프로토콜</th><th>범위</th><th>관리 포트</th><th>결과</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <details id="scan-groups" hidden>
+          <summary>점검한 보안 그룹 <span id="scan-group-count"></span></summary>
+          <div class="table-wrap">
+            <table id="scan-groups-table">
+              <thead><tr><th>그룹 ID</th><th>그룹 이름</th><th>연결 인스턴스</th><th>ENI</th><th>검토 필요</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
       </section>
     </main>
   </div>
