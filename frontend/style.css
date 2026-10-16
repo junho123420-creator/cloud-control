@@ -1,0 +1,213 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d9dde3;
+  --text: #1f2328;
+  --muted: #6a737d;
+  --accent: #2563eb;
+  --ok: #15803d;
+  --warn: #b45309;
+  --error: #b91c1c;
+  --error-bg: #fef2f2;
+  --empty-bg: #f1f5f9;
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  padding: 0 16px 32px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 0;
+}
+
+.topbar h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+#refresh-btn {
+  padding: 6px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+}
+
+#refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 1100px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  padding: 8px 16px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+}
+
+.tabs button[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+main {
+  max-width: 1100px;
+  margin: 16px auto 0;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+/* 로딩·빈 목록·오류를 각각 다르게 표시 */
+.status {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+
+.status:empty {
+  display: none;
+}
+
+.status-loading {
+  color: var(--muted);
+  background: var(--empty-bg);
+}
+
+.status-empty {
+  color: var(--text);
+  background: var(--empty-bg);
+  border: 1px dashed var(--border);
+}
+
+.status-error {
+  color: var(--error);
+  background: var(--error-bg);
+  border: 1px solid #fecaca;
+}
+
+.context {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px;
+}
+
+.context dt {
+  color: var(--muted);
+}
+
+.context dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.card-label {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.card-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.card-loading {
+  color: var(--muted);
+}
+
+.card-error {
+  color: var(--error);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+th,
+td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.state-running {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.state-stopped,
+.state-terminated {
+  color: var(--muted);
+}
+
+.state-pending,
+.state-stopping,
+.state-shutting-down {
+  color: var(--warn);
+}
