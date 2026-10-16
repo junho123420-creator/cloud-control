@@ -123,8 +123,20 @@ class AwsService:
                     "instance_type": inst.get("InstanceType"),
                     "private_ip": inst.get("PrivateIpAddress"),
                     "public_ip": inst.get("PublicIpAddress"),
+                    "controllable": inst["InstanceId"] in self.settings.allowed_instance_ids,
                 })
         return items
+
+    def ensure_controllable(self, instance_id: str) -> None:
+        """제어 요청을 AWS 호출 전에 서버 허용 목록으로 검사한다."""
+        allowed = self.settings.allowed_instance_ids
+        if not allowed:
+            raise AwsServiceError(
+                403, "CONTROL_DISABLED",
+                "제어 허용 목록(ALLOWED_INSTANCE_IDS)이 비어 있어 시작·중지를 할 수 없습니다.",
+            )
+        if instance_id not in allowed:
+            raise AwsServiceError(403, "INSTANCE_NOT_ALLOWED", "제어 허용 목록에 없는 인스턴스입니다.")
 
     def list_s3_buckets(self) -> list[dict]:
         buckets = self._paginate("s3", "list_buckets", "Buckets")
