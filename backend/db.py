@@ -8,7 +8,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.config import get_db_settings
-from backend.models import ActionLog
+from backend.models import MESSAGE_MAX, PENDING_STATUSES, STATUS_REQUESTED, ActionLog
 
 RECENT_ACTIONS_LIMIT = 50
 
@@ -55,6 +55,49 @@ def get_db() -> Iterator[Session]:
 def list_recent_actions(session: Session, limit: int = RECENT_ACTIONS_LIMIT) -> list[ActionLog]:
     stmt = select(ActionLog).order_by(ActionLog.created_at.desc(), ActionLog.id.desc()).limit(limit)
     return list(session.scalars(stmt))
+
+
+# ---- 제어 이력 저장 함수 (테스트에서 대체한다) ----
+# 실패하면 rollback 후 예외를 그대로 올린다. 호출자가 503 등으로 변환한다.
+
+
+def _commit(session: Session) -> None:
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+def get_action_by_request_id(session: Session, request_id: str) -> ActionLog | None:
+    return session.scalar(select(ActionLog).where(ActionLog.request_id == request_id))
+
+
+def find_pending_action(session: Session, instance_id: str) -> ActionLog | None:
+    stmt = (
+        select(ActionLog)
+        .where(ActionLog.instance_id == instance_id, ActionLog.status.in_(PENDING_STATUSES))
+        .order_by(ActionLog.id.desc())
+        .limit(1)
+    )
+    return session.scalar(stmt)
+
+
+def create_requested_action(session: Session, request_id: str, instance_id: str, action: str) -> ActionLog:
+    """AWS 호출 전에 REQUESTED를 commit한다. request_id 중복이면 IntegrityError."""
+    log = ActionLog(request_id=request_id, instance_id=instance_id, action=action, status=STATUS_REQUESTED)
+    session.add(log)
+    _commit(session)
+    return log
+
+
+def update_action_result(
+    session: Session, log: ActionLog, status: str, aws_request_id: str | None, message: str | None
+) -> None:
+    log.status = status
+    log.aws_request_id = aws_request_id
+    log.message = message[:MESSAGE_MAX] if message else None
+    _commit(session)
 
 
 def describe_db_error(exc: Exception) -> str:

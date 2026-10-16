@@ -2,17 +2,22 @@
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Path, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from pydantic import UUID4, BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from backend.actions import request_action
 from backend.auth import require_admin_token
-from backend.aws_service import AwsService, AwsServiceError
+from backend.aws_service import AwsService
 from backend.config import FRONTEND_DIR, ConfigError, get_db_settings, get_settings
 from backend.db import describe_db_error, get_db, list_recent_actions
+from backend.errors import AppError
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -41,9 +46,19 @@ def handle_config_error(request: Request, exc: ConfigError) -> JSONResponse:
     return error_response(500, "CONFIG_ERROR", str(exc))
 
 
-@app.exception_handler(AwsServiceError)
-def handle_aws_error(request: Request, exc: AwsServiceError) -> JSONResponse:
+@app.exception_handler(AppError)
+def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
     return error_response(exc.status_code, exc.code, exc.message)
+
+
+@app.exception_handler(RequestValidationError)
+def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # 입력값 자체는 응답에 넣지 않고 위치와 사유만 안내한다.
+    reasons = ", ".join(
+        f"{'.'.join(str(p) for p in err.get('loc', ())[1:]) or '본문'}: {err.get('type', 'invalid')}"
+        for err in exc.errors()
+    )
+    return error_response(422, "VALIDATION_ERROR", f"요청 형식이 올바르지 않습니다. ({reasons})")
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -100,6 +115,26 @@ def list_security_groups(aws: AwsService = Depends(verified_aws)):
 def list_actions(db: Session = Depends(get_db)):
     items = [log.to_dict() for log in list_recent_actions(db)]
     return {"items": items, "count": len(items)}
+
+
+class ActionRequest(BaseModel):
+    """제어 요청 본문. 이 두 필드 외에는 받지 않는다 (계정·리전·허용 목록은 서버 설정만 사용)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["start", "stop"]
+    request_id: UUID4
+
+
+@api.post("/ec2/{instance_id}/actions")
+def post_ec2_action(
+    body: ActionRequest,
+    instance_id: str = Path(pattern=r"^i-[0-9a-f]{8,17}$"),
+    aws: AwsService = Depends(get_aws),
+    db: Session = Depends(get_db),
+):
+    status_code, payload = request_action(db, aws, instance_id, body.action, str(body.request_id))
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 # 없는 /api 경로도 인증을 거친 뒤 JSON 404로 응답한다 (정적 파일로 넘어가지 않게).

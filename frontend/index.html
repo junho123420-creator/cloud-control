@@ -30,6 +30,7 @@
       <button type="button" role="tab" data-tab="ec2" aria-selected="false">EC2</button>
       <button type="button" role="tab" data-tab="s3" aria-selected="false">S3</button>
       <button type="button" role="tab" data-tab="sg" aria-selected="false">보안 그룹</button>
+      <button type="button" role="tab" data-tab="control" aria-selected="false">제어·이력</button>
     </nav>
 
     <main>
@@ -49,11 +50,12 @@
       </section>
 
       <section id="tab-ec2" class="panel" hidden>
+        <div id="ec2-action-status" class="status" hidden></div>
         <div id="ec2-status" class="status"></div>
         <div class="table-wrap">
           <table id="ec2-table" hidden>
             <thead>
-              <tr><th>이름</th><th>인스턴스 ID</th><th>상태</th><th>유형</th><th>프라이빗 IP</th><th>퍼블릭 IP</th><th>제어 허용</th></tr>
+              <tr><th>이름</th><th>인스턴스 ID</th><th>상태</th><th>유형</th><th>프라이빗 IP</th><th>퍼블릭 IP</th><th>제어 허용</th><th>작업</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -81,8 +83,57 @@
           </table>
         </div>
       </section>
+
+      <section id="tab-control" class="panel" hidden>
+        <div class="panel-head">
+          <p class="muted">허용 목록의 인스턴스만 시작·중지할 수 있습니다. 상태는 자동으로 갱신되지 않으니 새로고침하세요.</p>
+          <button id="control-refresh-btn" type="button" class="secondary">새로고침</button>
+        </div>
+        <div id="control-status" class="status" hidden></div>
+        <div id="unconfirmed-box" class="status status-warn" hidden></div>
+        <div class="split">
+          <div>
+            <h2>허용 대상 EC2 현재 상태</h2>
+            <div id="control-ec2-status" class="status"></div>
+            <div class="table-wrap">
+              <table id="control-ec2-table" hidden>
+                <thead><tr><th>이름</th><th>인스턴스 ID</th><th>상태</th><th>작업</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h2>최근 제어 이력</h2>
+            <div id="actions-status" class="status"></div>
+            <div class="table-wrap">
+              <table id="actions-table" hidden>
+                <thead><tr><th>시각(UTC)</th><th>인스턴스 ID</th><th>작업</th><th>결과</th><th>메시지</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog" id="confirm-form">
+      <h2>EC2 제어 확인</h2>
+      <dl class="context">
+        <dt>계정</dt><dd id="cf-account"></dd>
+        <dt>리전</dt><dd id="cf-region"></dd>
+        <dt>이름</dt><dd id="cf-name"></dd>
+        <dt>인스턴스 ID</dt><dd id="cf-id" class="mono"></dd>
+        <dt>작업</dt><dd id="cf-action" class="cf-action"></dd>
+      </dl>
+      <p id="cf-reuse" class="muted" hidden>응답을 받지 못했던 이전 요청과 같은 요청 키로 다시 보냅니다.</p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="secondary" id="cf-cancel">취소</button>
+        <button type="submit" value="approve" id="cf-approve">승인</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

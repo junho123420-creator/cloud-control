@@ -272,3 +272,86 @@ button.secondary {
   color: var(--ok);
   font-weight: 600;
 }
+
+.status-warn {
+  color: var(--warn);
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.panel-head p {
+  margin: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 16px;
+}
+
+.split h2,
+dialog h2 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.row-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.row-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.result-ACCEPTED { color: var(--ok); font-weight: 600; }
+.result-FAILED { color: var(--error); font-weight: 600; }
+.result-UNKNOWN,
+.result-REQUESTED { color: var(--warn); font-weight: 600; }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  max-width: min(90vw, 440px);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+.cf-action {
+  font-weight: 700;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+#cf-approve {
+  padding: 6px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+}

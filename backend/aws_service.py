@@ -5,11 +5,18 @@ from botocore import exceptions as bex
 from botocore.config import Config
 
 from backend.config import Settings
+from backend.errors import AppError
 
 BOTO_CONFIG = Config(
     connect_timeout=3,
     read_timeout=10,
     retries={"max_attempts": 2, "mode": "standard"},
+)
+# 변경(시작·중지) 전용: 결과가 불확실할 때 SDK가 몰래 재시도하지 않도록 한 번만 시도한다.
+CONTROL_CONFIG = Config(
+    connect_timeout=3,
+    read_timeout=10,
+    retries={"total_max_attempts": 1, "mode": "standard"},
 )
 
 # 로그인 만료·자격증명 없음·갱신 불가
@@ -41,12 +48,8 @@ ACCESS_DENIED_CODES = {
 }
 
 
-class AwsServiceError(Exception):
-    def __init__(self, status_code: int, code: str, message: str):
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
-        self.message = message
+class AwsServiceError(AppError):
+    pass
 
 
 def _translate(exc: Exception) -> AwsServiceError:
@@ -68,6 +71,34 @@ def _translate(exc: Exception) -> AwsServiceError:
     return AwsServiceError(502, "AWS_REQUEST_FAILED", "AWS 요청 처리 중 오류가 발생했습니다.")
 
 
+# 변경 호출 결과 분류
+OUTCOME_FAILED = "FAILED"  # AWS가 명시적으로 거절했거나 요청이 전송되지 않음
+OUTCOME_UNKNOWN = "UNKNOWN"  # 전송 후 응답을 받지 못해 결과를 알 수 없음
+
+
+def classify_control_error(exc: Exception) -> tuple[str, AwsServiceError]:
+    """시작·중지 호출 실패를 (FAILED|UNKNOWN, 응답 오류)로 분류한다."""
+    unknown = AwsServiceError(
+        503, "AWS_RESULT_UNKNOWN",
+        "AWS 응답을 받지 못해 결과를 알 수 없습니다. 콘솔에서 인스턴스 상태를 확인하세요. 자동으로 다시 요청하지 않습니다.",
+    )
+    # 연결 자체가 안 됐으면 요청이 전송되지 않은 것이다. (ConnectTimeoutError는 HTTPClientError이기도 하다)
+    if isinstance(exc, (bex.ConnectTimeoutError, bex.EndpointConnectionError)):
+        return OUTCOME_FAILED, _translate(exc)
+    if isinstance(exc, LOGIN_EXCEPTIONS):
+        return OUTCOME_FAILED, _translate(exc)
+    if isinstance(exc, bex.ClientError):
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+        if status >= 500:
+            return OUTCOME_UNKNOWN, unknown
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code == "IncorrectInstanceState":
+            return OUTCOME_FAILED, AwsServiceError(409, "INVALID_STATE", "AWS가 현재 인스턴스 상태에서 이 작업을 거절했습니다.")
+        return OUTCOME_FAILED, _translate(exc)
+    # 읽기 timeout, 연결 끊김, 그 밖의 예외는 전송 후일 수 있으므로 불확실로 본다.
+    return OUTCOME_UNKNOWN, unknown
+
+
 class AwsService:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -80,6 +111,9 @@ class AwsService:
 
     def _client(self, name: str):
         return self.session.client(name, config=BOTO_CONFIG)
+
+    def _control_client(self):
+        return self.session.client("ec2", config=CONTROL_CONFIG)
 
     def _call(self, func, *args, **kwargs):
         try:
@@ -137,6 +171,39 @@ class AwsService:
             )
         if instance_id not in allowed:
             raise AwsServiceError(403, "INSTANCE_NOT_ALLOWED", "제어 허용 목록에 없는 인스턴스입니다.")
+
+    def get_instance_state(self, instance_id: str) -> str:
+        """최신 상태를 AWS에서 직접 읽는다 (조회용 client)."""
+
+        def run():
+            try:
+                resp = self._client("ec2").describe_instances(InstanceIds=[instance_id])
+            except bex.ClientError as exc:
+                if exc.response.get("Error", {}).get("Code", "").startswith("InvalidInstanceID"):
+                    raise AwsServiceError(404, "INSTANCE_NOT_FOUND", "인스턴스를 찾을 수 없습니다.") from None
+                raise
+            for reservation in resp.get("Reservations", []):
+                for inst in reservation.get("Instances", []):
+                    if inst.get("InstanceId") == instance_id:
+                        return inst.get("State", {}).get("Name", "")
+            raise AwsServiceError(404, "INSTANCE_NOT_FOUND", "인스턴스를 찾을 수 없습니다.")
+
+        return self._call(run)
+
+    def change_instance_state(self, instance_id: str, action: str) -> str | None:
+        """시작·중지를 한 번만 호출하고 AWS RequestId를 반환한다.
+
+        예외는 변환하지 않고 그대로 올려 호출자가 FAILED/UNKNOWN을 판단하게 한다.
+        강제 중지·종료·waiter는 사용하지 않는다.
+        """
+        client = self._control_client()
+        if action == "start":
+            resp = client.start_instances(InstanceIds=[instance_id])
+        elif action == "stop":
+            resp = client.stop_instances(InstanceIds=[instance_id])
+        else:
+            raise ValueError("지원하지 않는 작업")
+        return resp.get("ResponseMetadata", {}).get("RequestId")
 
     def list_s3_buckets(self) -> list[dict]:
         buckets = self._paginate("s3", "list_buckets", "Buckets")
